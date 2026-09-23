@@ -37,7 +37,9 @@ class ModelProvider(models.Model):
 
     IMAGE2VIDEO_EXECUTORS = [
         ('core.ai_client.image2video_client.VideoGeneratorClient', '图生视频客户端'),
+        ('core.ai_client.newapi_image2video_client.NewApiImage2VideoClient', 'New API 网关图生视频客户端'),
         ('core.ai_client.volcengine_image2video_client.VolcengineImage2VideoClient', '火山引擎图生视频客户端'),
+        ('core.ai_client.minimax_image2video_client.MinimaxImage2VideoClient', 'MiniMax（海螺）图生视频客户端'),
         ('core.ai_client.comfyui_client.ComfyUIClient', 'ComfyUI客户端'),
         ('core.ai_client.mock_image2video_client.MockImage2VideoClient', 'Mock 图生视频客户端（测试用）'),
     ]

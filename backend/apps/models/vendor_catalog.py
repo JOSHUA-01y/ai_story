@@ -113,11 +113,20 @@ VENDOR_CATALOG: Dict[str, Dict[str, Any]] = {
             },
             'image2video': {
                 'provider_type': 'image2video',
-                'api_url': 'https://your-newapi-server-address/v1/videos/generations',
+                # New API 的统一任务接口（OpenAI Video Format）：POST /v1/videos
+                # + GET /v1/videos/{id} + GET /v1/videos/{id}/content。
+                # 若你的网关只暴露可灵/即梦原生的 /v1/video/generations，
+                # 把 api_url 改成它即可，同时在 extra_config 里设
+                # {"protocol": "video-generations"}。
+                'api_url': 'https://your-newapi-server-address/v1/videos',
                 'models_endpoint': 'https://your-newapi-server-address/v1/models',
-                'executor_class': 'core.ai_client.image2video_client.VideoGeneratorClient',
-                'recommended_patterns': ['veo', 'kling', 'wan', 'seedance'],
+                'executor_class': 'core.ai_client.newapi_image2video_client.NewApiImage2VideoClient',
+                'recommended_patterns': ['veo', 'kling', 'wan', 'seedance', 'sora', 'vidu', 'jimeng', 'happyhorse'],
                 'configurable_api_url': True,
+                'default_extra_config': {
+                    'protocol': 'v1-videos',
+                    'image_field_style': 'auto',
+                },
             },
         },
     },
@@ -204,12 +213,34 @@ VENDOR_CATALOG: Dict[str, Dict[str, Any]] = {
         'capabilities': {
             'llm': {
                 'provider_type': 'llm',
-                'api_url': 'https://api.minimax.chat/v1/text/chatcompletion_v2',
-                'models_endpoint': 'https://api.minimax.chat/v1/models',
+                # 国内站 api.minimaxi.com；国际站 api.minimax.io。
+                # 走 OpenAI 兼容的 /v1/chat/completions（旧版 chatcompletion_v2
+                # 的响应结构与 OpenAI 不一致，OpenAIClient 解析不了）。
+                'api_url': 'https://api.minimaxi.com/v1/chat/completions',
+                'models_endpoint': 'https://api.minimaxi.com/v1/models',
                 'executor_class': 'core.ai_client.openai_client.OpenAIClient',
                 'model_filter': ['minimax', 'abab'],
-                'recommended_patterns': ['minimax', 'abab'],
+                'recommended_patterns': ['MiniMax-M3', 'MiniMax-M2.5'],
                 'configurable_api_url': True,
+            },
+            'image2video': {
+                'provider_type': 'image2video',
+                # MiniMax H3 走 v2 任务接口：POST /v2/video_generation
+                # + GET /v2/query/video_generation/{task_id}。
+                # 旧版 Hailuo 2.3 把 api_url 换成
+                # https://api.minimaxi.com/v1/video_generation，
+                # 并在 extra_config 里设 {"api_version": "v1"}。
+                'api_url': 'https://api.minimaxi.com/v2/video_generation',
+                'models_endpoint': 'https://api.minimaxi.com/v1/models',
+                'executor_class': 'core.ai_client.minimax_image2video_client.MinimaxImage2VideoClient',
+                'model_filter': ['h3', 'hailuo', 'i2v'],
+                'recommended_patterns': ['MiniMax-H3', 'MiniMax-H3-Max', 'MiniMax-Hailuo-2.3'],
+                'configurable_api_url': True,
+                'default_extra_config': {
+                    'api_version': 'v2',
+                    # H3 出片较慢，避免通用默认值 600 秒误杀
+                    'max_wait_time': 1800,
+                },
             },
         },
     },
