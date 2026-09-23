@@ -1,5 +1,6 @@
 from unittest.mock import patch
 
+from asgiref.sync import sync_to_async
 from django.test import TestCase
 
 from apps.models.models import ModelProvider
@@ -171,6 +172,83 @@ class ModelProviderServiceImage2VideoTestCase(TestCase):
         self.assertEqual(result['data']['videos'][0]['url'], 'http://example.com/volc-video.mp4')
         mock_generate.assert_called_once()
         self.assertEqual(mock_generate.call_args.kwargs['image_uri'], 'http://example.com/test.png')
+
+    async def test_image2video_provider_uses_minimax_executor(self):
+        provider = ModelProvider(
+            name='MiniMax H3',
+            provider_type='image2video',
+            api_url='https://api.minimaxi.com/v2/video_generation',
+            api_key='secret',
+            model_name='MiniMax-H3',
+            executor_class='core.ai_client.minimax_image2video_client.MinimaxImage2VideoClient',
+            timeout=30,
+            extra_config={
+                'test_image_url': 'http://example.com/test.png',
+                'duration': 6,
+                'resolution': '768P',
+                'api_version': 'v2',
+            },
+        )
+
+        with patch(
+            'core.ai_client.minimax_image2video_client.MinimaxImage2VideoClient._generate_video',
+            return_value={'success': True, 'data': [{'url': 'http://example.com/minimax.mp4'}], 'metadata': {}},
+        ) as mock_generate:
+            result = await ModelProviderService._test_image2video_provider(provider, 'animate prompt')
+
+        self.assertTrue(result['success'])
+        self.assertEqual(result['data']['videos'][0]['url'], 'http://example.com/minimax.mp4')
+        mock_generate.assert_called_once()
+        self.assertEqual(mock_generate.call_args.kwargs['image_uri'], 'http://example.com/test.png')
+        self.assertEqual(mock_generate.call_args.kwargs['model'], 'MiniMax-H3')
+        self.assertEqual(mock_generate.call_args.kwargs['resolution'], '768P')
+
+    async def test_image2video_test_prompt_placeholder_is_replaced(self):
+        provider = await sync_to_async(ModelProvider.objects.create)(
+            name='MiniMax H3 Placeholder Prompt',
+            provider_type='image2video',
+            api_url='https://api.minimaxi.com/v2/video_generation',
+            api_key='secret',
+            model_name='MiniMax-H3',
+            executor_class='core.ai_client.minimax_image2video_client.MinimaxImage2VideoClient',
+            timeout=30,
+            is_active=True,
+            extra_config={'duration': 4},
+        )
+
+        with patch(
+            'core.ai_client.minimax_image2video_client.MinimaxImage2VideoClient._generate_video',
+            return_value={'success': True, 'data': [{'url': 'http://example.com/v.mp4'}], 'metadata': {}},
+        ) as mock_generate:
+            result = await ModelProviderService.test_provider_connection(str(provider.id), '你好啊？')
+
+        self.assertTrue(result['success'])
+        self.assertEqual(
+            mock_generate.call_args.kwargs['prompt'],
+            '一只小狗在阳光下的草地上欢快奔跑，镜头缓慢推进',
+        )
+
+    async def test_image2video_test_prompt_keeps_custom_prompt(self):
+        provider = await sync_to_async(ModelProvider.objects.create)(
+            name='MiniMax H3 Custom Prompt',
+            provider_type='image2video',
+            api_url='https://api.minimaxi.com/v2/video_generation',
+            api_key='secret',
+            model_name='MiniMax-H3',
+            executor_class='core.ai_client.minimax_image2video_client.MinimaxImage2VideoClient',
+            timeout=30,
+            is_active=True,
+            extra_config={'duration': 4},
+        )
+
+        with patch(
+            'core.ai_client.minimax_image2video_client.MinimaxImage2VideoClient._generate_video',
+            return_value={'success': True, 'data': [{'url': 'http://example.com/v.mp4'}], 'metadata': {}},
+        ) as mock_generate:
+            result = await ModelProviderService.test_provider_connection(str(provider.id), '一只橘猫跳上窗台')
+
+        self.assertTrue(result['success'])
+        self.assertEqual(mock_generate.call_args.kwargs['prompt'], '一只橘猫跳上窗台')
 
 
 

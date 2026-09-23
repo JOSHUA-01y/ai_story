@@ -42,7 +42,7 @@ CAPABILITY_CLASSIFICATION_PATTERNS = {
         'seedream', 'imagen', 't2i', 'image', 'imagine'
     ],
     'image2video': [
-        'video', 'i2v', 'veo', 'kling', 'seedance', 'wan', 's2v',
+        'video', 'i2v', 'veo', 'kling', 'seedance', 'wan', 's2v', 'h3', 'hailuo',
     ],
     'image_edit': [
         'edit', 'edits', 'inpaint', 'image-edit', 'img2img',
@@ -71,10 +71,48 @@ METADATA_CAPABILITY_MAP = {
     'embedding': None,
 }
 
+# 模型「名称」里出现即排除。名称直接写了 tts / audio / embedding 等，就说明它是该类模型。
 EXCLUDED_MODEL_TOKENS = [
     'embedding', 'embbeding', 'vector', 'rerank', 'tts', 'asr', 'speech', 'audio',
     'transcription', 'recognition', 'voice', 'moderation', 'safety',
 ]
+
+# 模型「domain」命中即整类排除。
+#
+# 注意: 只按 domain 判定，**不再扫描 task_type / modalities / features**。
+# 那三个字段是多值列表，模型常同时声明多项能力，拿关键词去扫会整类误杀:
+#   - doubao-seedance-1-5-pro-251215 : domain=VideoGeneration，
+#     但 task_type 含 TextToAudioVideo / ImageToAudioVideo（那是"顺带出音频"）
+#   - doubao-seedance-2-0-*          : 同样，input_modalities 里含 audio
+#   - doubao-seed-2-0-mini-260428    : domain=VLM，但 task_type 含 SpeechToText
+# 实测火山引擎 133 个模型里，这种扫法会静默丢掉 17 个（含项目单元测试所使用的
+# doubao-seedance-1-5-pro-251215，见 apps/models/tests/test_image2video_client.py:232）。
+EXCLUDED_MODEL_DOMAINS = [
+    'embedding', 'audiogeneration', 'audiotranscription', 'audiounderstanding',
+    'speechsynthesis', 'speechrecognition', 'voicesynthesis', 'moderation',
+]
+
+#: 图生视频「测试连接」的占位提示词。
+#:
+#: 前端（frontend/src/views/models/ModelList.vue）默认发的是问候语「你好啊？」，
+#: 这类问句对图生视频模型毫无意义，MiniMax H3 会直接以
+#: `2304 prompt rejected by identity policy` 拒掉整个任务（实测：问候语 + 内置
+#: 测试图 → 任务失败；同样图片换成描述运动的句子即成功）。
+#: 因此这里对占位提示词做一次兜底替换，用户自己填的提示词仍然优先。
+IMAGE2VIDEO_PLACEHOLDER_PROMPTS = frozenset({
+    '',
+    'hello, this is a test.',
+    'hello, this is a test',
+    'test',
+    '你好啊？',
+    '你好啊?',
+    '你好啊',
+    '测试',
+    '测试一下',
+})
+
+#: 兜底提示词（与 apps/models/test.jpeg 里的小狗测试图匹配）
+IMAGE2VIDEO_DEFAULT_TEST_PROMPT = '一只小狗在阳光下的草地上欢快奔跑，镜头缓慢推进'
 
 
 class ModelProviderService:
@@ -189,6 +227,8 @@ class ModelProviderService:
             '/videos/generations',
             '/video/generations',
             '/contents/generations/tasks',
+            # New API 统一任务接口（OpenAI Video Format）：/v1/videos -> /v1/models
+            '/videos',
         )
 
         for suffix in suffixes:
@@ -292,18 +332,57 @@ class ModelProviderService:
         return [str(value)]
 
     @staticmethod
-    def _should_exclude_model(item: Dict[str, Any], model_key: str) -> bool:
-        metadata_values = []
-        for field in ('domain', 'task_type', 'modalities', 'features'):
-            metadata_values.extend(ModelProviderService._iter_metadata_values(item.get(field)))
+    def _has_audio_only_output(item: Dict[str, Any]) -> bool:
+        """判断模型输出是否「只有音频」。
 
-        normalized_metadata = [
+        只看 output_modalities: 输入侧含 audio 不算（视频模型常支持音频输入），
+        但输出只有 audio、不含 video / image / text 的，就是 TTS 一类语音模型。
+
+        Args:
+            item: 厂商返回的模型元数据
+
+        Returns:
+            bool: 输出模态为纯音频时返回 True
+        """
+        modalities = item.get('modalities')
+        if not isinstance(modalities, dict):
+            return False
+
+        normalized_outputs = [
             ModelProviderService._normalize_capability_token(value)
-            for value in metadata_values
+            for value in ModelProviderService._iter_metadata_values(
+                modalities.get('output_modalities')
+            )
         ]
-        if any(token in normalized for normalized in normalized_metadata for token in EXCLUDED_MODEL_TOKENS):
+        if not normalized_outputs:
+            return False
+
+        has_audio = any('audio' in value for value in normalized_outputs)
+        has_non_audio = any(
+            keyword in value
+            for value in normalized_outputs
+            for keyword in ('video', 'image', 'text')
+        )
+        return has_audio and not has_non_audio
+
+    @staticmethod
+    def _should_exclude_model(item: Dict[str, Any], model_key: str) -> bool:
+        # 1) domain 是不可用类别的整类排除（Embedding / AudioGeneration / SpeechRecognition 等）
+        normalized_domain = ModelProviderService._normalize_capability_token(
+            item.get('domain') or ''
+        )
+        if any(keyword in normalized_domain for keyword in EXCLUDED_MODEL_DOMAINS):
             return True
 
+        # 2) 输出模态为纯音频的，视为语音模型
+        if ModelProviderService._has_audio_only_output(item):
+            return True
+
+        # 3) 名称里直接出现 'audio' / 'tts' / 'embedding' 等标记的
+        #
+        # 这里刻意不再扫描 task_type / modalities / features —— 详见
+        # EXCLUDED_MODEL_DOMAINS 上方的说明，扫多值列表会把支持音频的视频模型
+        # 和顺带支持语音识别的 VLM 一起误杀。
         return any(token in model_key for token in EXCLUDED_MODEL_TOKENS)
 
     @staticmethod
@@ -443,6 +522,9 @@ class ModelProviderService:
             api_url_override=data.get('api_url'),
         )
 
+        # 厂商目录可以带一组「默认额外参数」（如 New API 的 protocol / image_field_style），
+        # 批量导入时一并写进 extra_config，省得用户手填。
+        default_extra_config = dict(capability_config.get('default_extra_config') or {})
         base_payload = {
             'provider_type': capability_config['provider_type'],
             'api_url': capability_config['api_url'],
@@ -457,6 +539,7 @@ class ModelProviderService:
             'rate_limit_rpm': data.get('rate_limit_rpm', 60),
             'rate_limit_rpd': data.get('rate_limit_rpd', 1000),
             'extra_config': {
+                **default_extra_config,
                 'vendor': vendor,
                 'vendor_label': vendor_config['label'],
                 'vendor_capability': capability,
@@ -625,6 +708,19 @@ class ModelProviderService:
         }
 
     @staticmethod
+    def _resolve_image2video_test_prompt(test_prompt: str) -> str:
+        """图片/问候类占位提示词换成可用的运动描述。
+
+        前端「测试连接」默认发「你好啊？」，图生视频模型会把它当无效指令
+        （MiniMax H3 直接返回 2304 identity policy 拒绝）。用户自己填写的
+        提示词原样透传，只有占位词才替换。
+        """
+        normalized = str(test_prompt or '').strip()
+        if normalized.lower() in IMAGE2VIDEO_PLACEHOLDER_PROMPTS:
+            return IMAGE2VIDEO_DEFAULT_TEST_PROMPT
+        return normalized
+
+    @staticmethod
     def _load_default_image2video_test_image() -> Dict[str, str]:
         """读取内置图生视频测试图片并转换为 base64。"""
         image_path = Path(__file__).resolve().parent / 'test.jpeg'
@@ -697,6 +793,7 @@ class ModelProviderService:
                     test_prompt
                 )
             elif provider.provider_type == 'image2video':
+                test_prompt = ModelProviderService._resolve_image2video_test_prompt(test_prompt)
                 result = await ModelProviderService._test_image2video_provider(
                     provider,
                     test_prompt,
@@ -865,8 +962,10 @@ class ModelProviderService:
         """测试图生视频提供商"""
         from core.ai_client.base import AIResponse
         from core.ai_client.comfyui_client import ComfyUIClient
+        from core.ai_client.minimax_image2video_client import MinimaxImage2VideoClient
         from core.ai_client.mock_image2video_client import MockImage2VideoClient
         from core.ai_client.image2video_client import VideoGeneratorClient
+        from core.ai_client.newapi_image2video_client import NewApiImage2VideoClient
         from core.ai_client.volcengine_image2video_client import VolcengineImage2VideoClient
 
         extra_config = provider.extra_config or {}
@@ -937,15 +1036,29 @@ class ModelProviderService:
             'core.ai_client.image2video_client.VideoGeneratorClient',
             'core.ai_client.image2video_client.Image2VideoClient',
             'core.ai_client.volcengine_image2video_client.VolcengineImage2VideoClient',
+            'core.ai_client.newapi_image2video_client.NewApiImage2VideoClient',
+            'core.ai_client.minimax_image2video_client.MinimaxImage2VideoClient',
         ):
             client_class = VideoGeneratorClient
             if executor_class_path == 'core.ai_client.volcengine_image2video_client.VolcengineImage2VideoClient':
                 client_class = VolcengineImage2VideoClient
+            elif executor_class_path == 'core.ai_client.newapi_image2video_client.NewApiImage2VideoClient':
+                client_class = NewApiImage2VideoClient
+            elif executor_class_path == 'core.ai_client.minimax_image2video_client.MinimaxImage2VideoClient':
+                client_class = MinimaxImage2VideoClient
 
+            # extra_config 里的定制参数（protocol / image_field_style / duration ...）
+            # 透传给客户端；构造参数名冲突的键要剔掉，否则会 duplicate keyword。
+            extra_client_kwargs = {
+                key: value
+                for key, value in extra_config.items()
+                if key not in ('api_url', 'api_key', 'api_token', 'model', 'model_name')
+            }
             client = await sync_to_async(client_class)(
                 api_url=provider.api_url,
                 api_token=provider.api_key,
                 model=provider.model_name,
+                **extra_client_kwargs,
             )
             generate_kwargs = {
                 'prompt': prompt,
