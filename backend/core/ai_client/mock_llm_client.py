@@ -187,6 +187,12 @@ class MockLLMClient(LLMClient):
         """
         根据提示词内容返回相应的模拟响应
 
+        注意: 判定顺序很关键。分镜模板的约束里会出现「不得删减、合并或改写原句」
+        这类正常中文表述，若先按「改写」判断，分镜请求会被误判成 rewrite，返回
+        散文体文案，导致分镜阶段 JSON 解析失败
+        (Expecting value: line 1 column 1 (char 0))。
+        因此这里改为优先按各阶段产出的结构特征识别，通用关键词只作最后回退。
+
         Args:
             prompt: 输入提示词
 
@@ -195,15 +201,19 @@ class MockLLMClient(LLMClient):
         """
         prompt_lower = prompt.lower()
 
-        # 根据关键词判断响应类型
+        # 1. 运镜阶段：输出以 movement_type 为核心字段
+        if any(keyword in prompt_lower for keyword in ['movement_type', '运镜']):
+            return self.MOCK_RESPONSES['camera_movement']
+
+        # 2. 分镜阶段：输出是 scenes / visual_prompt 结构，模板必然带有这些字段名
+        if any(keyword in prompt_lower for keyword in ['visual_prompt', 'scene_number', 'scenes', '分镜', 'storyboard']):
+            return self.MOCK_RESPONSES['storyboard']
+
+        # 3. 文案改写阶段（兜底关键词，放在结构特征之后避免误判）
         if any(keyword in prompt_lower for keyword in ['改写', 'rewrite', '润色', '优化文案']):
             return self.MOCK_RESPONSES['rewrite']
-        elif any(keyword in prompt_lower for keyword in ['分镜', 'storyboard']):
-            return self.MOCK_RESPONSES['storyboard']
-        elif any(keyword in prompt_lower for keyword in ['运镜', 'camera', '镜头', 'movement']):
-            return self.MOCK_RESPONSES['camera_movement']
-        else:
-            return self.MOCK_RESPONSES['storyboard']
+
+        return self.MOCK_RESPONSES['storyboard']
 
     async def validate_config(self) -> bool:
         """

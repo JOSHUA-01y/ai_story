@@ -15,10 +15,15 @@ class MockImage2VideoClient(Image2VideoClient):
     """
 
     # 模拟视频URL列表（使用示例视频）
+    #
+    # 注意: 原先的 sample-videos.com 与 commondatastorage.googleapis.com 两个源在
+    # 容器内实测均已不可用——前者 SSL 证书主机名不匹配，后者返回 403 Forbidden。
+    # 结果是 图生视频 阶段状态为 completed，但前端播放器一直停在 0:00。
+    # 下面三个源均已在容器内实测可用（HTTP 206，支持 Range 分段请求）。
     MOCK_VIDEO_URLS = [
-        "https://sample-videos.com/video123/mp4/720/big_buck_bunny_720p_1mb.mp4",
-        "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
         "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/360/Big_Buck_Bunny_360_10s_1MB.mp4",
+        "https://test-videos.co.uk/vids/sintel/mp4/h264/360/Sintel_360_10s_1MB.mp4",
+        "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/720/Big_Buck_Bunny_720_10s_1MB.mp4",
     ]
 
     def _generate_video(
