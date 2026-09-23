@@ -15,6 +15,7 @@ from core.ai_client.image_result_utils import (
     normalize_result_data,
 )
 from core.ai_client.schemas import Text2ImageRequest
+from core.utils.http_retry import post_with_retry
 
 
 class OpenAIImagesGenerationExecutor(BaseText2ImageClient):
@@ -89,10 +90,19 @@ class OpenAIImagesGenerationExecutor(BaseText2ImageClient):
         if request.extra.get('response_format'):
             payload['response_format'] = request.extra['response_format']
 
+        # 水印开关：火山方舟 doubao-seedream 默认会给产物打「AI生成」水印，
+        # 短剧/成片素材需要干净画面，因此在 provider 的 extra_config 里加
+        # {"watermark": false} 即可关闭（request.extra 里的同名字段优先）。
+        watermark = request.extra.get('watermark')
+        if watermark is None:
+            watermark = self.config.get('watermark')
+        if watermark is not None:
+            payload['watermark'] = bool(watermark)
+
         merge_extra_payload(
             payload,
             request.extra,
-            reserved_keys={'timeout', 'resolution', 'steps', 'response_format'},
+            reserved_keys={'timeout', 'resolution', 'steps', 'response_format', 'watermark'},
         )
 
         headers = {
@@ -101,7 +111,9 @@ class OpenAIImagesGenerationExecutor(BaseText2ImageClient):
         }
 
         try:
-            response = requests.post(
+            # 用带重试的 POST：上游网关会以约 40% 的概率在 ~19.3s 处掐断连接
+            # （RemoteDisconnected / SSLError），重试即可成功。详见 core/utils/http_retry.py
+            response = post_with_retry(
                 request_url,
                 headers=headers,
                 json=payload,

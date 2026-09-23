@@ -9,6 +9,7 @@ from typing import Any, Dict, List
 import requests
 
 from core.ai_client.image2video_client import VideoGeneratorClient
+from core.utils.http_retry import get_with_retry, post_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,8 @@ class VolcengineImage2VideoClient(VideoGeneratorClient):
 
     def _create_volc_task(self, payload: Dict[str, Any], timeout: int) -> str:
         """提交火山方舟视频任务。"""
-        response = requests.post(
+        # 带连接重试：上游网关约 40% 概率在 ~19.3s 处掐断连接，详见 core/utils/http_retry.py
+        response = post_with_retry(
             self._build_create_task_url(),
             json=payload,
             headers=self.headers,
@@ -46,7 +48,7 @@ class VolcengineImage2VideoClient(VideoGeneratorClient):
 
     def _get_volc_task(self, task_id: str, timeout: int) -> Dict[str, Any]:
         """查询单次火山方舟任务状态。"""
-        response = requests.get(
+        response = get_with_retry(
             self._build_task_status_url(task_id),
             headers=self.headers,
             timeout=timeout,

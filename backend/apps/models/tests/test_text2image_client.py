@@ -1,9 +1,84 @@
-from unittest.mock import Mock, patch
+﻿from unittest.mock import Mock, patch
 
 from django.test import SimpleTestCase
 
 from core.ai_client.executors.chat_completions_image_executor import ChatCompletionsImageExecutor
+from core.ai_client.executors.openai_images_generation_executor import (
+    OpenAIImagesGenerationExecutor,
+)
+from core.ai_client.schemas import Text2ImageRequest
 from core.ai_client.text2image_client import Text2ImageClient
+
+
+class OpenAIImagesGenerationExecutorWatermarkTestCase(SimpleTestCase):
+    @patch('core.ai_client.executors.openai_images_generation_executor.post_with_retry')
+    @patch(
+        'core.ai_client.executors.openai_images_generation_executor.localize_image_item',
+        side_effect=lambda item, width, height, timeout: {'url': item['url']},
+    )
+    def test_watermark_from_extra_config_is_forwarded(self, mock_localize, mock_post):
+        response = Mock()
+        response.status_code = 200
+        response.json.return_value = {'data': [{'url': 'https://example.com/a.png'}]}
+        mock_post.return_value = response
+
+        executor = OpenAIImagesGenerationExecutor(
+            api_url='https://ark.cn-beijing.volces.com/api/v3/images/generations',
+            api_key='test-key',
+            model_name='doubao-seedream-5-0-260128',
+            watermark=False,
+        )
+
+        executor.generate(prompt='写实剧照', width=1024, height=1024)
+
+        self.assertFalse(mock_post.call_args.kwargs['json']['watermark'])
+
+    @patch('core.ai_client.executors.openai_images_generation_executor.post_with_retry')
+    @patch(
+        'core.ai_client.executors.openai_images_generation_executor.'
+        'localize_image_item',
+        side_effect=lambda item, width, height, timeout: {'url': item['url']},
+    )
+    def test_watermark_absent_by_default(self, mock_localize, mock_post):
+        response = Mock()
+        response.status_code = 200
+        response.json.return_value = {'data': [{'url': 'https://example.com/a.png'}]}
+        mock_post.return_value = response
+
+        executor = OpenAIImagesGenerationExecutor(
+            api_url='https://ark.cn-beijing.volces.com/api/v3/images/generations',
+            api_key='test-key',
+            model_name='doubao-seedream-5-0-260128',
+        )
+
+        executor.generate(prompt='写实剧照', width=1024, height=1024)
+
+        self.assertNotIn('watermark', mock_post.call_args.kwargs['json'])
+
+    @patch('core.ai_client.executors.openai_images_generation_executor.post_with_retry')
+    @patch(
+        'core.ai_client.executors.openai_images_generation_executor.'
+        'localize_image_item',
+        side_effect=lambda item, width, height, timeout: {'url': item['url']},
+    )
+    def test_request_extra_beats_extra_config(self, mock_localize, mock_post):
+        response = Mock()
+        response.status_code = 200
+        response.json.return_value = {'data': [{'url': 'https://example.com/a.png'}]}
+        mock_post.return_value = response
+
+        executor = OpenAIImagesGenerationExecutor(
+            api_url='https://ark.cn-beijing.volces.com/api/v3/images/generations',
+            api_key='test-key',
+            model_name='doubao-seedream-5-0-260128',
+            watermark=False,
+        )
+
+        executor._run_request(
+            Text2ImageRequest(prompt='写实剧照', extra={'watermark': True}),
+        )
+
+        self.assertTrue(mock_post.call_args.kwargs['json']['watermark'])
 
 
 class Text2ImageClientTestCase(SimpleTestCase):
