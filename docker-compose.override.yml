@@ -1,0 +1,70 @@
+# 本地开发用的 Compose 覆盖文件（由 compose 自动合并，无需 -f 指定）。
+#
+# 1) 数据落盘：docker-compose.yml 中 backend 服务没有声明 volumes，而 celery 服务挂了
+#    `./backend:/app/backend`。结果是 backend 把 SQLite 写在容器内 /app/backend/data/，
+#    celery 却读写宿主机 ./backend/data/，两者不是同一个库；并且 `docker compose down`
+#    会连同容器可写层一起删掉数据库和生成的媒体文件。这里把 data / storage 落到宿主机。
+#
+# 2) 国内网络加速：本机直连 deb.debian.org 只有约 90 kB/s（gcc 工具链拉不完），
+#    pypi.org 基本不可用；实测腾讯云镜像 apt 约 5 MB/s。这两个参数在 docker/Dockerfile
+#    中是可选 ARG，留空即回退官方源，因此不影响 CI 或其他网络环境。
+#
+# 不需要本文件时删除即可恢复原行为。
+
+services:
+  backend:
+    # 注入 .env。Django 自身不读 .env（settings 里没有 load_dotenv），
+    # 只能靠 env_file 把变量送进容器进程环境。
+    # 下面的 environment: 优先级高于 env_file:，因此 DJANGO_SETTINGS_MODULE=production
+    # 和 REDIS_HOST=redis 不会被 .env 里的本地开发取值覆盖。
+    # required: false 保证仓库里没有 .env 时 compose 仍能启动。
+    env_file:
+      - path: .env
+        required: false
+    build:
+      args:
+        APT_MIRROR: mirrors.cloud.tencent.com
+        PYPI_INDEX: https://mirrors.cloud.tencent.com/pypi/simple
+    # LinkNow 前端（linknow/dist）在构建时把 API 地址写死成 http://127.0.0.1:8010，
+    # 由浏览器直接发起跨域请求，因此 8010 必须发布到宿主机；否则预检 OPTIONS 会被
+    # 拒绝，页面报 "Failed to fetch"。管理端 /admin/ 走 nginx 反代，不依赖这条。
+    ports:
+      - "8010:8010"
+    # 为什么把 gevent 换成 gthread：
+    # gunicorn 的 gevent worker 会 monkey.patch_all()，把 threading 变成 greenlet；
+    # 于是 asgiref sync_to_async 里的 ORM 查询和 async_to_sync 新建的事件循环落在
+    # 同一个 OS 线程上，Django 会判定「在 async 上下文访问数据库」并抛
+    # SynchronousOnlyOperation —— 表现为模型管理里所有 provider 的「测试连接」
+    # 都报「测试连接失败」（崩在 apps/models/services.py:737 的第一句 ORM 查询，
+    # HTTP 请求根本还没发出去，与厂商/Key 无关）。
+    # gthread 用真线程，asgiref 的异步桥接即恢复 Django 的设计行为。
+    # 并发上限由线程数决定，长请求（LLM 流式、SSE）每个占一个线程；不够就调大 --threads。
+    command: gunicorn --chdir /app/backend config.wsgi:application --bind 0.0.0.0:8010 -k gthread --workers 2 --threads 32 --timeout 3600
+    volumes:
+      - ./backend/data:/app/backend/data
+      - ./storage:/app/storage
+
+  celery:
+    env_file:
+      - path: .env
+        required: false
+    build:
+      args:
+        APT_MIRROR: mirrors.cloud.tencent.com
+        PYPI_INDEX: https://mirrors.cloud.tencent.com/pypi/simple
+    # 镜像的 ENTRYPOINT (backend-entrypoint) 默认会执行 migrate，而 compose 的
+    # command: 只覆盖 CMD、覆盖不了 ENTRYPOINT，于是 backend 与 celery 会并发对
+    # 同一个 SQLite 文件跑迁移，直接 database is locked / table already exists。
+    # 迁移只交给 backend 做。
+    environment:
+      RUN_MIGRATIONS: "0"
+    volumes:
+      - ./storage:/app/storage
+
+  frontend:
+    # 「1c」：让 nginx 直接伺服本地产物，而不是把 /storage/ 转发给 Django。
+    # 挂载之后 nginx 才能用 alias 读到文件，并原生支持 HTTP Range（206 分段请求），
+    # 大视频可秒开、进度条可拖动；不挂载的话 /storage/ 会直接 404。
+    # 只读挂载即可，nginx 只需要读权限。
+    volumes:
+      - ./storage:/usr/share/nginx/storage:ro
